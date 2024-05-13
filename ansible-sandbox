@@ -1,0 +1,163 @@
+#!/bin/bash
+
+# bash strict mode
+set -T          # inherit DEBUG and RETURN trap for functions
+set -C          # prevent file overwrite by > &> <>
+set -E          # inherit -e
+set -e          # exit immediately on errors
+set -u          # exit on not assigned variables
+set -o pipefail # exit on pipe failure
+
+################################################################################
+# Check for necessary commands
+################################################################################
+function import() {
+	declare -r command_name=$1
+
+	if ! which "$command_name" >/dev/null 2>&1; then
+		echo "$command_name" not found.
+		echo Make sure you have installed it.
+		echo install "$command_name" from here:
+		case "$command_name" in
+		*)
+			echo 'your OS repository or search the Internet'
+			;;
+		esac
+		exit 1
+	fi
+}
+
+import echo
+import printf
+import perl
+import podman
+
+################################################################################
+# Global variables
+################################################################################
+declare CLI_VERSION
+CLI_VERSION="$(cat ./VERSION)"
+readonly CLI_VERSION
+declare -r CLI_NAME='ansible-sandbox'
+declare -r PS4='debug($LINENO) ${FUNCNAME[0]:+${FUNCNAME[0]}}(): '
+
+################################################################################
+# Functions
+################################################################################
+function main_help() {
+	echo list of commands:
+	printf "%-23s %s\n" "help" "show help menu and commands"
+	printf "%-23s %s\n" "version" "show version of this script"
+	printf "%-23s %s\n" "up" "set up Ansible sandbox"
+	printf "%-23s %s\n" "down" "tear down Ansible sandbox"
+
+	exit "${1:-0}"
+}
+
+function version() {
+	echo $CLI_NAME "$CLI_VERSION"
+	exit 0
+}
+
+function up_help() {
+	printf "%-23s %s\n" "up" "generate from a template"
+	printf "%-25s %s\n" "-f  │ --feature-level" "any well formatted file"
+	printf "%-23s %s\n" "      --help" "this help menu"
+	exit 0
+}
+
+function log_info {
+	echo -e "\e[94m[INFO | $("${NOW[@]}")] ${1}\e[0m"
+}
+
+function trap_handler {
+	log_info "[INFO] Caught interrupt signal. Exiting gracefully..."
+	cleanup
+}
+
+function cleanup {
+	log_info "[INFO] Stopping & cleaning up test environment..."
+	podman kube down "${KUBE_YAML_PATH}"
+}
+
+function up() {
+	local target="podman"
+
+	while [ ${#} -gt 0 ]; do
+		error_message="Error: a value is needed for '$1'"
+		case $1 in
+		--help)
+			up_help
+			;;
+		-f | --feature-level)
+			target=${2:?$error_message}
+			shift 2
+			;;
+		*)
+			echo "unknown option $1"
+			break
+			;;
+		esac
+	done
+
+	trap trap_handler SIGINT
+
+	NOW=(date +'%d/%m/%Y - %H:%M:%S')
+
+	log_info "Building image..."
+	podman build --format docker --tag local/dev-env:latest --target "${target}-base" image/
+	log_info "Image build complete."
+	log_info "Setting up test environment..."
+	podman kube play --replace "${KUBE_YAML_PATH}"
+	log_info "Environment set up successfully."
+
+	exit 0
+}
+
+function down_help() {
+	printf "%-23s %s\n" "down" "tear down Ansible sandbox"
+	printf "%-23s %s\n" "      --help" "this help menu"
+	exit 0
+}
+
+function down() {
+	while [ ${#} -gt 0 ]; do
+		error_message="Error: a value is needed for '$1'"
+		case $1 in
+		--help)
+			down_help
+			;;
+		*)
+			echo "unknown option $1"
+			break
+			;;
+		esac
+	done
+
+	podman kube down "${KUBE_YAML_PATH}"
+
+	exit 0
+}
+
+function main() {
+	if ((${#} == 0)); then
+		main_help 0
+	fi
+
+	case ${1} in
+	--help)
+		main_help 0
+		;;
+	version | up | down)
+		$1 "${@:2}"
+		;;
+	*)
+		echo "unknown command: $1"
+		main_help 1
+		;;
+	esac
+}
+
+KUBE_YAML_PATH=./ansible-sandbox.k8s.yaml
+
+main "$@"

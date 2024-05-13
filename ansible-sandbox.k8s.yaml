@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "ansible-sandbox"
+  namespace: default
+  labels:
+    app: "ansible-sandbox"
+spec:
+  containers:
+    - name: environment
+      image: local/dev-env:latest
+      securityContext:
+        procMount: Unmasked
+      volumeMounts:
+        - name: ansible_repository
+          mountPath: /home/ansible/source
+        - name: tun
+          mountPath: /dev/net/tun
+  volumes:
+    - name: ansible_repository
+      hostPath:
+        path: ../
+    - name: tun
+      hostPath:
+        path: /dev/net/tun
+  restartPolicy: OnFailure

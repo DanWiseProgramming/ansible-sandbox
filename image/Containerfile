@@ -1,0 +1,93 @@
+FROM rockylinux:9.3 AS systemd-base
+ENV container=podman
+
+CMD ["/sbin/init"]
+
+STOPSIGNAL SIGRTMIN+3
+
+SHELL ["/bin/bash", "-c"]
+
+# hadolint ignore=DL3033
+RUN [ ! -f /usr/sbin/init ] \
+ && yum -y install \
+        systemd \
+        procps-ng \
+ && yum clean all \
+ && rm -rf /var/yum/cache
+
+RUN systemctl mask systemd-remount-fs.service \
+    dev-hugepages.mount \
+    sys-fs-fuse-connections.mount \
+    getty.target \
+    console-getty.service \
+    systemd-udev-trigger.service \
+    systemd-udevd.service \
+    systemd-random-seed.service \
+    systemd-machine-id-commit.service
+
+FROM systemd-base AS ansible-base
+
+SHELL ["/bin/bash", "-c"]
+
+# hadolint ignore=DL3033
+RUN yum -y install \
+      sudo \
+      which \
+      hostname \
+      ansible-core \
+ && yum clean all \
+ && rm -rf /var/yum/cache \
+ && useradd ansible \
+ && echo "ansible       ALL=(ALL)       NOPASSWD: ALL" >> /etc/sudoers.d/01-ansible \
+ && export ANSIBLE_INVENTORY=/etc/ansible/hosts \
+ && echo -e "export ANSIBLE_INVENTORY=${ANSIBLE_INVENTORY}" > /etc/profile.d/ansible-inventory.sh \
+ && mkdir -p "$(dirname "${ANSIBLE_INVENTORY}")" \
+ && echo -e '[local]\nlocalhost ansible_connection=local' > "${ANSIBLE_INVENTORY}"
+
+FROM ansible-base AS podman-base
+
+ARG container_user=container
+
+SHELL ["/bin/bash", "-c"]
+
+# hadolint ignore=DL3033
+RUN yum -y install \
+      podman \
+      fuse-overlayfs \
+      openssh-clients \
+      containers-common \
+      container-tools \
+ && rpm -e --nodeps container-selinux \
+ && rpm --setcaps shadow-utils 2>/dev/null \
+ && yum clean all \
+ && rm -rf /var/yum/cache \
+ && rm -rf /var/cache /var/log/dnf* /var/log/yum.* \
+ && sed -i -e 's|^#mount_program|mount_program|g' \
+           -e '/additionalimage.*/a "/var/lib/shared",' \
+           -e 's|^mountopt[[:space:]]*=.*$|mountopt = "nodev,fsync=0"|g' \
+           /etc/containers/storage.conf \
+ && mkdir -p /var/lib/shared/overlay-images \
+             /var/lib/shared/overlay-layers \
+             /var/lib/shared/vfs-images \
+             /var/lib/shared/vfs-layers \
+ && touch /var/lib/shared/overlay-images/images.lock \
+ && touch /var/lib/shared/overlay-layers/layers.lock \
+ && touch /var/lib/shared/vfs-images/images.lock \
+ && touch /var/lib/shared/vfs-layers/layers.lock \
+ && useradd ${container_user} \
+ && echo -e "${container_user}:1:999\n${container_user}:1002:64535" > /etc/subuid \
+ && echo -e "${container_user}:1:999\n${container_user}:1002:64535" > /etc/subgid \
+ && runuser -l ansible -c 'ansible-galaxy collection install containers.podman'
+
+COPY ./files/containers.conf /etc/containers/containers.conf
+COPY ./files/podman-containers.conf /home/${container_user}/.config/containers/containers.conf
+
+RUN mkdir -p /home/${container_user}/.local/share/containers && \
+    chown ${container_user}:${container_user} -R /home/${container_user} && \
+    chmod 644 /etc/containers/containers.conf
+
+VOLUME /var/lib/containers
+VOLUME /home/${container_user}/.local/share/containers
+
+ENV _CONTAINERS_USERNS_CONFIGURED="" \
+    BUILDAH_ISOLATION=chroot
