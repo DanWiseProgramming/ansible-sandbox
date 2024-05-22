@@ -12,6 +12,7 @@ RUN [ ! -f /usr/sbin/init ] \
  && yum -y install \
         systemd \
         procps-ng \
+        policycoreutils-python-utils \
  && yum clean all \
  && rm -rf /var/yum/cache
 
@@ -38,20 +39,17 @@ RUN yum -y install \
  && yum clean all \
  && rm -rf /var/yum/cache \
  && useradd ansible \
- && echo "ansible       ALL=(ALL)       NOPASSWD: ALL" >> /etc/sudoers.d/01-ansible \
- && export ANSIBLE_INVENTORY=/etc/ansible/hosts \
- && echo -e "export ANSIBLE_INVENTORY=${ANSIBLE_INVENTORY}" > /etc/profile.d/ansible-inventory.sh \
- && mkdir -p "$(dirname "${ANSIBLE_INVENTORY}")" \
- && echo -e '[local]\nlocalhost ansible_connection=local' > "${ANSIBLE_INVENTORY}"
+ && echo "ansible       ALL=(ALL)       NOPASSWD: ALL" >> /etc/sudoers.d/01-ansible
 
 FROM ansible-base AS podman-base
 
 ARG container_user=container
+ARG ansible_plugins_install_script_path=/plugins.sh
 
 SHELL ["/bin/bash", "-c"]
 
 # hadolint ignore=DL3033
-RUN yum -y install \
+RUN --mount=type=bind,source=files/install_ansible_plugins.sh,target=${ansible_plugins_install_script_path},rw yum -y install \
       podman \
       fuse-overlayfs \
       openssh-clients \
@@ -77,7 +75,9 @@ RUN yum -y install \
  && useradd ${container_user} \
  && echo -e "${container_user}:1:999\n${container_user}:1002:64535" > /etc/subuid \
  && echo -e "${container_user}:1:999\n${container_user}:1002:64535" > /etc/subgid \
- && runuser -l ansible -c 'ansible-galaxy collection install containers.podman'
+ && chown "${container_user}:${container_user}" "${ansible_plugins_install_script_path}" \
+ && chmod +x "${ansible_plugins_install_script_path}" \
+ && runuser -l ansible -c "${ansible_plugins_install_script_path}"
 
 COPY ./files/containers.conf /etc/containers/containers.conf
 COPY ./files/podman-containers.conf /home/${container_user}/.config/containers/containers.conf
